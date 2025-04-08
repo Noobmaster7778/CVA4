@@ -172,12 +172,14 @@ def training_loop(dataloader_X, dataloader_Y, opts):
     g_optimizer = optim.Adam(g_params, opts.lr, [opts.beta1, opts.beta2])
     d_optimizer = optim.Adam(d_params, opts.lr, [opts.beta1, opts.beta2])
 
+    # 为损失函数构造简便写法（这里采用 MSELoss 作为 GAN 的对抗损失）
+    mse_loss = torch.nn.functional.mse_loss
+    l1_loss = torch.nn.functional.l1_loss
+
     iter_X = iter(dataloader_X)
     iter_Y = iter(dataloader_Y)
 
     # Get some fixed data from domains X and Y for sampling.
-    # These are images that are held constant throughout training,
-    # that allow us to inspect the model's performance.
     fixed_X = utils.to_var(next(iter_X))
     fixed_Y = utils.to_var(next(iter_Y))
 
@@ -196,70 +198,88 @@ def training_loop(dataloader_X, dataloader_Y, opts):
         images_Y = next(iter_Y)
         images_Y = utils.to_var(images_Y)
 
+        ###########################################
         # TRAIN THE DISCRIMINATORS
+        ###########################################
         # 1. Compute the discriminator losses on real images
-        D_X_loss = 
-        D_Y_loss = 
-
-        d_real_loss = D_X_loss + D_Y_loss
+        D_X_real = D_X(images_X)
+        D_Y_real = D_Y(images_Y)
+        D_X_loss_real = mse_loss(D_X_real, torch.ones_like(D_X_real))
+        D_Y_loss_real = mse_loss(D_Y_real, torch.ones_like(D_Y_real))
+        d_real_loss = D_X_loss_real + D_Y_loss_real
 
         # 2. Generate domain-X-like images based on real images in domain Y
-        fake_X = 
+        fake_X = G_YtoX(images_Y)
+        if opts.use_diffaug:
+            fake_X = DiffAugment(fake_X, policy)
 
-        # 3. Compute the loss for D_X
-        D_X_loss = 
+        # 3. Compute the loss for D_X on fake images (detach generator gradient)
+        D_X_fake = D_X(fake_X.detach())
+        D_X_loss_fake = mse_loss(D_X_fake, torch.zeros_like(D_X_fake))
 
         # 4. Generate domain-Y-like images based on real images in domain X
+        fake_Y = G_XtoY(images_X)
+        if opts.use_diffaug:
+            fake_Y = DiffAugment(fake_Y, policy)
 
-        # 5. Compute the loss for D_Y
-        D_Y_loss = 
+        # 5. Compute the loss for D_Y on fake images
+        D_Y_fake = D_Y(fake_Y.detach())
+        D_Y_loss_fake = mse_loss(D_Y_fake, torch.zeros_like(D_Y_fake))
 
-        d_fake_loss = D_X_loss + D_Y_loss
+        d_fake_loss = D_X_loss_fake + D_Y_loss_fake
 
-        # sum up the losses and update D_X and D_Y
+        # Sum up the losses and update D_X and D_Y
         d_optimizer.zero_grad()
         d_total_loss = d_real_loss + d_fake_loss
         d_total_loss.backward()
         d_optimizer.step()
 
-        # plot the losses in tensorboard
-        logger.add_scalar('D/XY/real', D_X_loss, iteration)
-        logger.add_scalar('D/YX/real', D_Y_loss, iteration)
-        logger.add_scalar('D/XY/fake', D_X_loss, iteration)
-        logger.add_scalar('D/YX/fake', D_Y_loss, iteration)
+        # Plot the losses in tensorboard
+        logger.add_scalar('D/XY/real', D_X_loss_real, iteration)
+        logger.add_scalar('D/YX/real', D_Y_loss_real, iteration)
+        logger.add_scalar('D/XY/fake', D_X_loss_fake, iteration)
+        logger.add_scalar('D/YX/fake', D_Y_loss_fake, iteration)
+
+        ###########################################
+        # TRAIN THE GENERATORS
+        ###########################################
+        g_loss = 0
 
         # Y--X-->Y CYCLE
-        # TRAIN THE GENERATORS
         # 1. Generate domain-X-like images based on real images in domain Y
-        fake_X = 
-
-        # 2. Compute the generator loss based on domain X
-        g_loss = 
-        logger.add_scalar('G/XY/fake', g_loss, iteration)
+        fake_X = G_YtoX(images_Y)
+        if opts.use_diffaug:
+            fake_X = DiffAugment(fake_X, policy)
+        # 2. Compute the generator loss based on D_X (want D_X(fake_X) close to 1)
+        g_loss_X = mse_loss(D_X(fake_X), torch.ones_like(D_X(fake_X)))
+        logger.add_scalar('G/XY/fake', g_loss_X, iteration)
+        g_loss += g_loss_X
 
         if opts.use_cycle_consistency_loss:
-            # 3. Compute the cycle consistency loss (the reconstruction loss)
-            cycle_consistency_loss = 
-
-            g_loss += opts.lambda_cycle * cycle_consistency_loss
-            logger.add_scalar('G/XY/cycle', opts.lambda_cycle * cycle_consistency_loss, iteration)
+            # 3. Compute the cycle consistency loss: reconstruct Y from fake_X
+            reconstructed_Y = G_XtoY(fake_X)
+            cycle_consistency_loss_Y = l1_loss(reconstructed_Y, images_Y)
+            g_loss += opts.lambda_cycle * cycle_consistency_loss_Y
+            logger.add_scalar('G/XY/cycle', opts.lambda_cycle * cycle_consistency_loss_Y, iteration)
 
         # X--Y-->X CYCLE
         # 1. Generate domain-Y-like images based on real images in domain X
-        fake_Y = 
-
-        # 2. Compute the generator loss based on domain Y
-        g_loss += 
-        logger.add_scalar('G/YX/fake', g_loss, iteration)
+        fake_Y = G_XtoY(images_X)
+        if opts.use_diffaug:
+            fake_Y = DiffAugment(fake_Y, policy)
+        # 2. Compute the generator loss based on D_Y (want D_Y(fake_Y) close to 1)
+        g_loss_Y = mse_loss(D_Y(fake_Y), torch.ones_like(D_Y(fake_Y)))
+        logger.add_scalar('G/YX/fake', g_loss_Y, iteration)
+        g_loss += g_loss_Y
 
         if opts.use_cycle_consistency_loss:
-            # 3. Compute the cycle consistency loss (the reconstruction loss)
-            cycle_consistency_loss = 
+            # 3. Compute the cycle consistency loss: reconstruct X from fake_Y
+            reconstructed_X = G_YtoX(fake_Y)
+            cycle_consistency_loss_X = l1_loss(reconstructed_X, images_X)
+            g_loss += opts.lambda_cycle * cycle_consistency_loss_X
+            logger.add_scalar('G/YX/cycle', opts.lambda_cycle * cycle_consistency_loss_X, iteration)
 
-            g_loss += opts.lambda_cycle * cycle_consistency_loss
-            logger.add_scalar('G/YX/cycle', cycle_consistency_loss, iteration)
-
-        # backprop the aggregated g losses and update G_XtoY and G_YtoX
+        # Backprop the aggregated generator losses and update G_XtoY and G_YtoX
         g_optimizer.zero_grad()
         g_loss.backward()
         g_optimizer.step()
@@ -268,11 +288,11 @@ def training_loop(dataloader_X, dataloader_Y, opts):
         if iteration % opts.log_step == 0:
             print(
                 'Iteration [{:5d}/{:5d}] | d_real_loss: {:6.4f} | '
-                'd_Y_loss: {:6.4f} | d_X_loss: {:6.4f} | '
-                'd_fake_loss: {:6.4f} | g_loss: {:6.4f}'.format(
+                'D_Y_real_loss: {:6.4f} | D_X_fake_loss: {:6.4f} | '
+                'D_Y_fake_loss: {:6.4f} | g_loss: {:6.4f}'.format(
                     iteration, opts.train_iters, d_real_loss.item(),
-                    D_Y_loss.item(), D_X_loss.item(),
-                    d_fake_loss.item(), g_loss.item()
+                    D_Y_loss_real.item(), D_X_loss_fake.item(),
+                    D_Y_loss_fake.item(), g_loss.item()
                 )
             )
 
@@ -284,7 +304,7 @@ def training_loop(dataloader_X, dataloader_Y, opts):
         if iteration % opts.checkpoint_every == 0:
             checkpoint(iteration, G_XtoY, G_YtoX, D_X, D_Y, opts)
 
-
+            
 def main(opts):
     """Loads the data and starts the training loop."""
     # Create  dataloaders for images from the two domains X and Y

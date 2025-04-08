@@ -41,13 +41,15 @@ def get_data_loader(data_path, opts):
     if opts.data_preprocess == 'basic':
         train_transform = basic_transform
     elif opts.data_preprocess == 'deluxe':
-        # todo: add your code here: below are some ideas for your reference
-        # load_size = int(1.1 * opts.image_size)
-        # osize = [load_size, load_size]
-        # transforms.Resize(osize, Image.BICUBIC)
-        # transforms.RandomCrop(opts.image_size)
-        # transforms.RandomHorizontalFlip()
-        pass
+      load_size = int(1.1 * opts.image_size)
+      osize = [load_size, load_size]
+      train_transform = transforms.Compose([
+          transforms.Resize(osize, Image.BICUBIC),
+          transforms.RandomCrop(opts.image_size),
+          transforms.RandomHorizontalFlip(),
+          transforms.ToTensor(),
+          transforms.Normalize([0.5], [0.5])  # 如果是RGB，请用3个数
+      ])
 
     dataset = CustomDataSet(
         os.path.join('data/', data_path), opts.ext, train_transform

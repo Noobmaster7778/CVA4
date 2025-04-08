@@ -12,7 +12,7 @@
 
 import argparse
 import os
-
+import math
 import imageio
 import numpy as np
 import torch
@@ -43,7 +43,7 @@ def print_models(G, D):
     print("                    G                  ")
     print("---------------------------------------")
     print(G)
-    summary(G.cuda(), (3, 64, 64))
+    summary(G.cuda(), (100, 1, 1))
     print("---------------------------------------")
 
     print("                    D                  ")
@@ -75,7 +75,7 @@ def create_image_grid(array, ncols=None):
 
     if not ncols:
         ncols = int(np.sqrt(num_images))
-    nrows = int(np.math.floor(num_images / float(ncols)))
+    nrows = int(math.floor(num_images / float(ncols)))
     result = np.zeros(
         (cell_h * nrows, cell_w * ncols, channels),
         dtype=array.dtype
@@ -183,10 +183,9 @@ def training_loop(train_dataloader, opts):
     d_optimizer = optim.Adam(D.parameters(), opts.lr, [opts.beta1, opts.beta2])
 
     # Generate fixed noise for sampling from the generator
-    fixed_noise = sample_noise(opts.batch_size, opts.noise_size)  # B N 1 1
+    fixed_noise = sample_noise(opts.batch_size, opts.noise_size)  # B, noise_size, 1, 1
 
     iteration = 1
-
     total_train_iters = opts.num_epochs * len(train_dataloader)
 
     # Initialize lists to store losses
@@ -196,53 +195,36 @@ def training_loop(train_dataloader, opts):
     G_losses = []
 
     for _ in range(opts.num_epochs):
-
         for batch in train_dataloader:
+            real_images = utils.to_var(batch)
 
-            real_images = batch
-            real_images = utils.to_var(real_images)
-
-            # TRAIN THE DISCRIMINATOR
-            # 1. Compute the discriminator loss on real images
+            # --- Train Discriminator ---
             D_real_loss = torch.mean((D(real_images) - 1) ** 2)
-
-            # 2. Sample noise
-            noise = 
-
-            # 3. Generate fake images from the noise
-            fake_images = 
-
-            # 4. Compute the discriminator loss on the fake images
+            noise = sample_noise(opts.batch_size, opts.noise_size)
+            fake_images = G(noise)
             D_fake_loss = torch.mean((D(fake_images.detach())) ** 2)
             D_total_loss = (D_real_loss + D_fake_loss) / 2
 
-            # update the discriminator D
             d_optimizer.zero_grad()
             D_total_loss.backward()
             d_optimizer.step()
 
-            # Store the losses in the lists
+            # --- Train Generator ---
+            noise = sample_noise(opts.batch_size, opts.noise_size)
+            fake_images = G(noise)
+            G_loss = torch.mean((D(fake_images) - 1) ** 2)
+
+            g_optimizer.zero_grad()
+            G_loss.backward()
+            g_optimizer.step()
+
+            # Record losses into lists for plotting
             D_real_losses.append(D_real_loss.item())
             D_fake_losses.append(D_fake_loss.item())
             D_total_losses.append(D_total_loss.item())
             G_losses.append(G_loss.item())
 
-            # TRAIN THE GENERATOR
-            # 1. Sample noise
-            noise = 
-
-            # 2. Generate fake images from the noise
-            fake_images = 
-
-            # 3. Compute the generator loss
-            G_loss = 
-
-            # update the generator G
-            g_optimizer.zero_grad()
-            G_loss.backward()
-            g_optimizer.step()
-
-            # Print the log info
+            # Log info every opts.log_step iterations
             if iteration % opts.log_step == 0:
                 print(
                     'Iteration [{:4d}/{:4d}] | D_real_loss: {:6.4f} | '
@@ -256,12 +238,12 @@ def training_loop(train_dataloader, opts):
                 logger.add_scalar('D/total', D_total_loss, iteration)
                 logger.add_scalar('G/total', G_loss, iteration)
 
-            # Save the generated samples
+            # Save generated samples and real images at intervals
             if iteration % opts.sample_every == 0:
                 save_samples(G, fixed_noise, iteration, opts)
                 save_images(real_images, iteration, opts, 'real')
 
-            # Save the model parameters
+            # Save model parameters periodically
             if iteration % opts.checkpoint_every == 0:
                 checkpoint(iteration, G, D, opts)
 
